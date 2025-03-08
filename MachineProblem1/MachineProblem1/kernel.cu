@@ -3,9 +3,55 @@
 #include "device_launch_parameters.h"
 #include <cuda.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <math.h>
 
+#define TOLERANCE 0.00001
 __host__ int retCores(cudaDeviceProp *device) {
     return 128 * device->multiProcessorCount; 
+}
+
+__global__ void matrixMultiplicationKernel(float *P, const float *M, const float *N, int numDimensions) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (col < numDimensions && row < numDimensions) {
+        float sum = 0.0f;
+        
+        //dot product approach
+        for (int i = 0; i < numDimensions; i++) {
+            sum += M[row * numDimensions + i] * N[i * numDimensions + col]; // Online source. https://math.stackexchange.com/questions/2354047/dot-product-vs-matrix-multiplication-is-the-later-a-special-case-of-the-first
+        }
+    P[row * numDimensions + col] = sum;
+    }
+}
+
+__host__ void matrixMultiplicationCpu(float *P, const float *M, const float *N, int numDimensions) {
+    for (int i = 0; i < numDimensions; i++) {
+        for (int j = 0; j < numDimensions; j++) {
+            float sum = 0.0f;
+
+            for (int k = 0; k < numDimensions; k++) {
+                sum += M[i * numDimensions + k] * N[k * numDimensions + j];
+            }
+            P[i * numDimensions + j] = sum;
+        }
+    }
+}
+
+void verifyMatrix(float *matrix1, float *matrix2, int numDimensions) {
+    for (int i = 0; i < numDimensions * numDimensions; i++) {
+        if (fabs(matrix1[i] - matrix2[i]) > TOLERANCE) {
+            printf("Test FAILED\n");
+        }
+    }
+    printf("Test PASSED\n");
+}
+
+void initializeMatrix(float* matrix, int size) {
+    for (int i = 0; i < size; i++) {
+        matrix[i] = static_cast<float>(rand()) / RAND_MAX;
+    }
 }
 
 int main() {
@@ -13,137 +59,113 @@ int main() {
     //part1 
     // device : NVIDIA 3060ti. device major = 8, according to online documentation this is an ampere convention which means 128 * the mp count. 
     int nd;
-    cudaGetDeviceCount(&nd);
+    int n = 1024;
 
+    //host -> device
+
+    cudaGetDeviceCount(&nd);
     for (int i = 0; i < nd; i++) {
         cudaDeviceProp deviceProps;
         cudaGetDeviceProperties(&deviceProps, i);
         int cores = retCores(&deviceProps);
-
         printf("Number of devices: %d\n CUDA device [%s]\n Clock Rate: %d \n MultiProcessorCount: %d\n Number of Cores: %d\n", nd, deviceProps.name, deviceProps.clockRate, deviceProps.multiProcessorCount, cores);
-        
         printf(" warp size: %d\n total global memory: %zu \n shared mem per block %zu \n num registers per block %d \n max threads per block %d \n max dimension size of each block (%d, %d, %d) \n max size of grid (%d, %d, %d) \n",
-            deviceProps.warpSize, deviceProps.totalGlobalMem, deviceProps.sharedMemPerBlock, deviceProps.regsPerBlock, deviceProps.maxThreadsPerBlock, deviceProps.maxThreadsDim[0], 
+            deviceProps.warpSize, deviceProps.totalGlobalMem, deviceProps.sharedMemPerBlock, deviceProps.regsPerBlock, deviceProps.maxThreadsPerBlock, deviceProps.maxThreadsDim[0],
             deviceProps.maxThreadsDim[1], deviceProps.maxThreadsDim[2], deviceProps.maxGridSize[0], deviceProps.maxGridSize[1], deviceProps.maxGridSize[2]);
     }
+    //part2
+    size_t size = n * n * sizeof(float);
+
+    //alloc host mem
+    float* h_M = (float*)malloc(size);
+    float* h_N = (float*)malloc(size);
+    float* h_P = (float*)malloc(size);
+    float* h_P_cpu = (float*)malloc(size);
+
+    //alloc device mem
+    float* d_M, * d_N, * d_P;
+    cudaMalloc(&d_M, size);
+    cudaMalloc(&d_N, size);
+    cudaMalloc(&d_P, size);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaDeviceSynchronize();
+
+    dim3 threadsPerBlock(1, 1); // 256 threads
+    dim3 blocksPerGrid((n + threadsPerBlock.x - 1) / threadsPerBlock.x, (n + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+    float gpu_time = 0.0f;
+    float cpu_time = 0.0f;
+
+    initializeMatrix(h_M, n * n);
+    initializeMatrix(h_N, n * n);
+
+    //part 2 matrix mult 
+    cudaMemcpy(d_M, h_M, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_N, h_N, size, cudaMemcpyHostToDevice);
+    cudaEventRecord(start, 0);
+    matrixMultiplicationKernel<<<blocksPerGrid, threadsPerBlock>>> (d_P, d_M, d_N, n);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&gpu_time, start, stop);
+
+    cudaEventRecord(start, 0);
+    matrixMultiplicationCpu(h_P, h_M, h_N, n);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&cpu_time, start, stop);
+
+    cudaMemcpy(h_P_cpu, d_P, size, cudaMemcpyDeviceToHost);
+    verifyMatrix(h_P, h_P_cpu, n);
+
+    printf("CPU TIME: %f\n GPU TIME: %f\n", cpu_time, gpu_time);
+
+    cudaFree(d_M);
+    cudaFree(d_N);
+    cudaFree(d_P);
+    free(h_M);
+    free(h_N);
+    free(h_P);
+    free(h_P_cpu);
+
+
+
+    //part 1 - data collection 
+    //float total_H2D = 0.0f, total_D2H = 0.0f;
+    //for (int i = 0; i < 6; i++) {
+    //    float gpu_time = 0.0f;
+
+    //    // host to Device Transfer Time
+    //    cudaEventRecord(start, 0);
+    //    cudaMemcpy(d_M, h_M, size, cudaMemcpyHostToDevice);
+    //    cudaMemcpy(d_N, h_N, size, cudaMemcpyHostToDevice);
+    //    cudaEventRecord(stop, 0);
+    //    cudaEventSynchronize(stop);
+    //    cudaEventElapsedTime(&gpu_time, start, stop);
+    //    total_H2D += gpu_time;
+    //    printf("Run %d - Host to Device Transfer Time: %f ms\n", i + 1, gpu_time);
+
+    //    // device to Host Transfer Time
+    //    cudaEventRecord(start, 0);
+    //    cudaMemcpy(h_M, d_M, size, cudaMemcpyDeviceToHost);
+    //    cudaMemcpy(h_N, d_N, size, cudaMemcpyDeviceToHost);
+    //    cudaEventRecord(stop, 0);
+    //    cudaEventSynchronize(stop);
+    //    cudaEventElapsedTime(&gpu_time, start, stop);
+    //    total_D2H += gpu_time;
+    //    printf("run %d - Device to Host Transfer Time: %f ms\n", i + 1, gpu_time);
+    //}
+
+    //printf("\naverage Host to Device Transfer Time: %f ms\n", total_H2D / 6);
+    //printf("average Device to Host Transfer Time: %f ms\n", total_D2H / 6);
+
+
+
+
 }
 
-
-
-/*
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
-}
-
-int main()
-{
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
-
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
-
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
-
-    return 0;
-}
-
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
-
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
-
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
-}
-*/
+    //matrixMultiplicationKernel<<<threadsPerBlock, blocksPerGrid>>>(d_P, d_M, d_N, n); // sends 256 threads, and a gridsize
+    //cudaMemcpy(a, d_a, nbytes, cudaMemcpyDeviceToHost, 0);
+    //cudaEventRecord(stop, 0);
