@@ -3,6 +3,8 @@
 #include <math.h>
 #define TOLERANCE 0.0001
 
+// I testify to the originalithreadIdY of my work : TREVOR FARIAS 20321873
+
 const int test_sizes[] = { 256, 512, 1024, 2048, 4096 };
 const int tile_sizes[] = { 2, 4, 8, 16, 32 };
 const int num_tests = sizeof(test_sizes) / sizeof(test_sizes[0]);
@@ -10,35 +12,35 @@ const int num_tiles = sizeof(tile_sizes) / sizeof(tile_sizes[0]);
 
 __global__ void matrixMulTiled(float* P, float* M, float* N, int width, int TILE_WIDTH) {
     extern __shared__ float sharedMemory[];
-    float* Mds = sharedMemory;
-    float* Nds = &sharedMemory[TILE_WIDTH * TILE_WIDTH];
+    float* Mshared = sharedMemory;
+    float* Nshared = &sharedMemory[TILE_WIDTH * TILE_WIDTH];
 
-    int tx = threadIdx.x, ty = threadIdx.y;
-    int row = blockIdx.y * TILE_WIDTH + ty;
-    int col = blockIdx.x * TILE_WIDTH + tx;
-    float Pvalue = 0.0;
+    int threadIdX = threadIdx.x, threadIdY = threadIdx.y;
+    int row = blockIdx.y * TILE_WIDTH + threadIdY;
+    int col = blockIdx.x * TILE_WIDTH + threadIdX;
+    float valP = 0.0;
 
     for (int ph = 0; ph < width / TILE_WIDTH; ++ph) {
-        if (row < width && (ph * TILE_WIDTH + tx) < width)
-            Mds[ty * TILE_WIDTH + tx] = M[row * width + ph * TILE_WIDTH + tx];
+        if (row < width && (ph * TILE_WIDTH + threadIdX) < width)
+            Mshared[threadIdY * TILE_WIDTH + threadIdX] = M[row * width + ph * TILE_WIDTH + threadIdX];
         else
-            Mds[ty * TILE_WIDTH + tx] = 0.0;
+            Mshared[threadIdY * TILE_WIDTH + threadIdX] = 0.0;
 
-        if (col < width && (ph * TILE_WIDTH + ty) < width)
-            Nds[ty * TILE_WIDTH + tx] = N[(ph * TILE_WIDTH + ty) * width + col];
+        if (col < width && (ph * TILE_WIDTH + threadIdY) < width)
+            Nshared[threadIdY * TILE_WIDTH + threadIdX] = N[(ph * TILE_WIDTH + threadIdY) * width + col];
         else
-            Nds[ty * TILE_WIDTH + tx] = 0.0;
+            Nshared[threadIdY * TILE_WIDTH + threadIdX] = 0.0;
 
         __syncthreads();
 
         for (int k = 0; k < TILE_WIDTH; ++k)
-            Pvalue += Mds[ty * TILE_WIDTH + k] * Nds[k * TILE_WIDTH + tx];
+            valP += Mshared[threadIdY * TILE_WIDTH + k] * Nshared[k * TILE_WIDTH + threadIdX];
 
         __syncthreads();
     }
 
     if (row < width && col < width)
-        P[row * width + col] = Pvalue;
+        P[row * width + col] = valP;
 }
 
 void verifyMatrix(float* matrix1, float* matrix2, int numDimensions) {
