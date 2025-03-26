@@ -5,10 +5,12 @@
 
 // I testify to the originality of my work : TREVOR FARIAS 20321873
 
-const int TILE_WIDTH_X = 12;
-const int TILE_WIDTH_Y = 18;
+const int tile_sizes[][2] = { {12, 18}, {16, 16}, {32, 32} };
+const int num_tile_sizes = sizeof(tile_sizes) / sizeof(tile_sizes[0]);
+const int test_matrices[][3] = { {750, 800, 850}, {2000, 1750, 1900} };
+const int num_tests = sizeof(test_matrices) / sizeof(test_matrices[0]);
 
-__global__ void matrixMulTiled(float* P, float* M, float* N, int M_rows, int M_cols, int N_cols) {
+__global__ void matrixMulTiled(float* P, float* M, float* N, int M_rows, int M_cols, int N_cols, int TILE_WIDTH_X, int TILE_WIDTH_Y) {
     extern __shared__ float sharedMemory[];
     float* Mshared = sharedMemory;
     float* Nshared = &sharedMemory[TILE_WIDTH_Y * TILE_WIDTH_X];
@@ -41,7 +43,7 @@ __global__ void matrixMulTiled(float* P, float* M, float* N, int M_rows, int M_c
         P[row * N_cols + col] = valP;
 }
 
-void hostFunction(int M_rows, int M_cols, int N_cols) {
+void hostFunction(int M_rows, int M_cols, int N_cols, int TILE_WIDTH_X, int TILE_WIDTH_Y) {
     size_t size_M = M_rows * M_cols * sizeof(float);
     size_t size_N = M_cols * N_cols * sizeof(float);
     size_t size_P = M_rows * N_cols * sizeof(float);
@@ -71,7 +73,7 @@ void hostFunction(int M_rows, int M_cols, int N_cols) {
     cudaDeviceSynchronize();
 
     cudaEventRecord(start, 0);
-    matrixMulTiled << <dimGrid, dimBlock, sharedMemSize >> > (d_P, d_M, d_N, M_rows, M_cols, N_cols);
+    matrixMulTiled << <dimGrid, dimBlock, sharedMemSize >> > (d_P, d_M, d_N, M_rows, M_cols, N_cols, TILE_WIDTH_X, TILE_WIDTH_Y);
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
 
@@ -92,8 +94,17 @@ void hostFunction(int M_rows, int M_cols, int N_cols) {
 }
 
 int main() {
-    printf("Running bonus test cases...\n");
-    hostFunction(750, 800, 850);
-    hostFunction(2000, 1750, 1900);
+    printf("running bonus test cases\n");
+    for (int i = 0; i < num_tests; i++) {
+        for (int j = 0; j < num_tile_sizes; j++) {
+            int M_rows = test_matrices[i][0];
+            int M_cols = test_matrices[i][1];
+            int N_cols = test_matrices[i][2];
+            int TILE_WIDTH_X = tile_sizes[j][0];
+            int TILE_WIDTH_Y = tile_sizes[j][1];
+            printf("testing matrix %d x %d * %d x %d with TILE_WIDTH %d x %d\n", M_rows, M_cols, M_cols, N_cols, TILE_WIDTH_X, TILE_WIDTH_Y);
+            hostFunction(M_rows, M_cols, N_cols, TILE_WIDTH_X, TILE_WIDTH_Y);
+        }
+    }
     return 0;
 }
