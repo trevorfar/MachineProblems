@@ -3,18 +3,20 @@
 #include <math.h>
 #define TOLERANCE 0.0001
 
-// I testify to the originalithreadIdY of my work : TREVOR FARIAS 20321873
+// I testify to the originality of my work : TREVOR FARIAS 20321873
 
 const int test_sizes[] = { 256, 512, 1024, 2048, 4096 };
 const int tile_sizes[] = { 2, 4, 8, 16, 32 };
 const int num_tests = sizeof(test_sizes) / sizeof(test_sizes[0]);
 const int num_tiles = sizeof(tile_sizes) / sizeof(tile_sizes[0]);
 
+// tiled matrixa multiplcation
 __global__ void matrixMulTiled(float* P, float* M, float* N, int width, int TILE_WIDTH) {
     extern __shared__ float sharedMemory[];
     float* Mshared = sharedMemory;
     float* Nshared = &sharedMemory[TILE_WIDTH * TILE_WIDTH];
 
+    // finding tha rows and columns
     int threadIdX = threadIdx.x, threadIdY = threadIdx.y;
     int row = blockIdx.y * TILE_WIDTH + threadIdY;
     int col = blockIdx.x * TILE_WIDTH + threadIdX;
@@ -31,6 +33,7 @@ __global__ void matrixMulTiled(float* P, float* M, float* N, int width, int TILE
         else
             Nshared[threadIdY * TILE_WIDTH + threadIdX] = 0.0;
 
+        // sync threads command shown in slides 
         __syncthreads();
 
         for (int k = 0; k < TILE_WIDTH; ++k)
@@ -42,7 +45,7 @@ __global__ void matrixMulTiled(float* P, float* M, float* N, int width, int TILE
     if (row < width && col < width)
         P[row * width + col] = valP;
 }
-
+// same verify matrix from machine problems 1
 void verifyMatrix(float* matrix1, float* matrix2, int numDimensions) {
     for (int i = 0; i < numDimensions * numDimensions; i++) {
         if (fabs(matrix1[i] - matrix2[i]) > TOLERANCE) {
@@ -52,6 +55,7 @@ void verifyMatrix(float* matrix1, float* matrix2, int numDimensions) {
     }
     printf("Test PASSED\n");
 }
+
 
 void hostFunction(int width, int TILE_WIDTH) {
     size_t size = width * width * sizeof(float);
@@ -97,7 +101,7 @@ int main() {
         int matrix_size = test_sizes[i];
         for (int j = 0; j < num_tiles; j++) {
             int TILE_WIDTH = tile_sizes[j];
-            printf("Running test for matrix size: %d x %d with TILE_WIDTH: %d\n", matrix_size, matrix_size, TILE_WIDTH);
+            printf("test for matrix size: %d x %d with TILE_WIDTH: %d\n", matrix_size, matrix_size, TILE_WIDTH);
 
             float gpu_time = 0.0f;
             cudaEvent_t start, stop;
